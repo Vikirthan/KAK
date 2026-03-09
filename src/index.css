@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+/* Fix native <select> / <option> dropdown backgrounds for dark theme */
+select {
+    background-color: #1a1a2e;
+    color: #e2e8f0;
+}
+
+option {
+    background-color: #1a1a2e;
+    color: #e2e8f0;
+    padding: 8px 12px;
+}
+
+option:checked,
+option:hover {
+    background-color: #4f46e5;
+    color: #fff;
+}
