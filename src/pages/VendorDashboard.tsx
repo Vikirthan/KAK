@@ -1,10 +1,75 @@
 import { useState, useEffect, useCallback } from 'react';
-import { LogOut } from 'lucide-react';
+import { LogOut, X, Download, ZoomIn, Camera } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { getComplaints, updateComplaint, deletePhotoFromSupabase } from '../services/complaintService';
 import { getSupervisorRanking } from '../services/statService';
 import type { Complaint } from '../lib/types';
 import type { RankedSupervisor } from '../services/statService';
+
+// ─── Photo Lightbox with Download ────────────────────────────────
+function PhotoLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+        document.addEventListener('keydown', handler);
+        return () => document.removeEventListener('keydown', handler);
+    }, [onClose]);
+
+    const handleDownload = async () => {
+        try {
+            const response = await fetch(src);
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `KAK_VEND_${alt.replace(/\s+/g, '_')}_${Date.now()}.jpg`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch {
+            window.open(src, '_blank');
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-xl flex items-center justify-center p-4 animate-in fade-in" onClick={onClose}>
+            <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
+                <button onClick={(e) => { e.stopPropagation(); handleDownload(); }}
+                    className="bg-white/10 hover:bg-white/20 p-3 rounded-full transition-all" title="Download photo">
+                    <Download size={22} className="text-white" />
+                </button>
+                <button onClick={onClose} className="bg-white/10 hover:bg-white/20 p-3 rounded-full transition-all">
+                    <X size={24} className="text-white" />
+                </button>
+            </div>
+            <img src={src} alt={alt} className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()} />
+        </div>
+    );
+}
+
+// ─── Clickable Photo Thumbnail ───────────────────────────────────
+function ClickablePhoto({ src, alt, label, className = '' }: { src: string; alt: string; label?: string; className?: string }) {
+    const [lightbox, setLightbox] = useState(false);
+    if (!src) return null;
+    return (
+        <div className={className}>
+            {label && (
+                <div className="flex items-center gap-1.5 mb-2">
+                    <Camera size={12} className="text-white/30" />
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">{label}</p>
+                </div>
+            )}
+            <div className="relative group cursor-pointer rounded-xl overflow-hidden border border-white/5 bg-white/5" style={{ minHeight: '80px' }}>
+                <img src={src} alt={alt} className="w-full h-24 object-cover" />
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all rounded-xl flex items-center justify-center gap-2">
+                    <ZoomIn size={18} className="text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-lg" />
+                    <span className="text-white text-[10px] font-bold opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-lg">Zoom</span>
+                </div>
+            </div>
+            {lightbox && <PhotoLightbox src={src} alt={alt} onClose={() => setLightbox(false)} />}
+        </div>
+    );
+}
 
 export default function VendorDashboard() {
     const { logout, getSession } = useAuth();
@@ -81,7 +146,7 @@ export default function VendorDashboard() {
             {/* Navbar */}
             <nav className="sticky top-0 z-50 bg-[#161625]/80 backdrop-blur-xl border-b border-white/5 py-3 px-4 md:px-6 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                    <img src="/icon-192.png" alt="KAK" className="w-9 h-9 rounded-lg" />
+                    <img src="icon-192.png" alt="KAK" className="w-9 h-9 rounded-lg" />
                     <div>
                         <span className="text-lg font-bold tracking-tight">VENDOR MANAGER</span>
                         <span className="hidden sm:block text-[10px] text-white/40 uppercase tracking-widest">Global Oversight Panel</span>
@@ -154,8 +219,8 @@ export default function VendorDashboard() {
                                     </div>
                                     {c.description && <div className="text-xs text-white/30 italic p-2 bg-white/[0.02] rounded-lg mb-3">"{c.description}"</div>}
                                     <div className="flex gap-2 mb-3">
-                                        {c.photo && <div className="flex-1"><span className="text-[9px] text-white/30">Complaint</span><img src={c.photo} alt="Before" className="w-full max-h-20 object-cover rounded-lg" /></div>}
-                                        {(c.supervisorPhoto || c.resolutionPhoto) && <div className="flex-1"><span className="text-[9px] text-white/30">Resolution</span><img src={(c.supervisorPhoto || c.resolutionPhoto)!} alt="After" className="w-full max-h-20 object-cover rounded-lg" /></div>}
+                                        {c.photo && <ClickablePhoto src={c.photo} alt="Complaint" label="Complaint" className="flex-1" />}
+                                        {(c.supervisorPhoto || c.resolutionPhoto) && <ClickablePhoto src={(c.supervisorPhoto || c.resolutionPhoto)!} alt="Resolution" label="Resolution" className="flex-1" />}
                                     </div>
                                     <div className="flex gap-2">
                                         <button onClick={() => vendorDecision(c, 'clear')} className="flex-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 py-2 rounded-xl text-xs font-bold">✅ Accept & Clear</button>

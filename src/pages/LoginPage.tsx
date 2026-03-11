@@ -70,7 +70,7 @@ export default function LoginPage() {
                 <div className="hidden md:flex flex-col justify-between p-10 bg-gradient-to-br from-indigo-950/50 to-transparent border-r border-white/[0.04]">
                     <div>
                         <div className="flex items-center gap-3 mb-10">
-                            <img src="/icon-192.png" alt="KAK Logo" className="w-12 h-12 rounded-xl" />
+                            <img src="icon-192.png" alt="KAK Logo" className="w-12 h-12 rounded-xl" />
                             <div>
                                 <span className="text-white text-lg font-black tracking-tight block">KAK</span>
                                 <span className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest flex items-center gap-1">
@@ -117,7 +117,7 @@ export default function LoginPage() {
                 <div className="p-8 md:p-10 flex flex-col justify-center">
                     {/* Mobile logo */}
                     <div className="md:hidden flex items-center gap-3 mb-8">
-                        <img src="/icon-192.png" alt="KAK Logo" className="w-10 h-10 rounded-lg" />
+                        <img src="icon-192.png" alt="KAK Logo" className="w-10 h-10 rounded-lg" />
                         <span className="text-white font-black text-lg">KAK</span>
                     </div>
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { LogOut, X, ZoomIn, Download, MapPin, User, Phone, Wrench, Calendar, MessageSquare, Camera, AlertTriangle, CircleAlert, Shield, CheckCircle, Clock, Star, ChevronRight, FileWarning, Ban, Building2 } from 'lucide-react';
+import { LogOut, X, ZoomIn, Download, MapPin, User, Phone, Wrench, Calendar, MessageSquare, Camera, AlertTriangle, CircleAlert, Shield, CheckCircle, Star, ChevronRight, FileWarning, Ban, Building2 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { getComplaints, updateComplaint, uploadPhotoToSupabase, deletePhotoFromSupabase, getComplaintsForSupervisor } from '../services/complaintService';
 import { getSupStat } from '../services/statService';
@@ -275,7 +275,7 @@ export default function AODashboard() {
             {/* Navbar */}
             <nav className="sticky top-0 z-50 bg-[#161625]/80 backdrop-blur-xl border-b border-white/5 py-3 px-4 md:px-6 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                    <img src="/icon-192.png" alt="KAK" className="w-9 h-9 rounded-lg" />
+                    <img src="icon-192.png" alt="KAK" className="w-9 h-9 rounded-lg" />
                     <div>
                         <span className="text-lg font-bold tracking-tight">AO OFFICE</span>
                         <span className="hidden sm:block text-[10px] text-white/40 uppercase tracking-widest">Block {user.block || '–'} · Management Console</span>

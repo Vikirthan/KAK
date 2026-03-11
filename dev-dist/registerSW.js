@@ -1,0 +1,1 @@
+if('serviceWorker' in navigator) navigator.serviceWorker.register('/KAK/dev-sw.js?dev-sw', { scope: '/KAK/', type: 'classic' })

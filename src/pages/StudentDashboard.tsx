@@ -180,7 +180,7 @@ export default function StudentDashboard() {
             {/* Navbar */}
             <nav className="sticky top-0 z-50 bg-[#161625]/80 backdrop-blur-xl border-b border-white/5 py-3 px-4 md:px-6 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                    <img src="/icon-192.png" alt="KAK" className="w-9 h-9 rounded-lg" />
+                    <img src="icon-192.png" alt="KAK" className="w-9 h-9 rounded-lg" />
                     <div>
                         <span className="text-lg font-bold tracking-tight">KAK</span>
                         <span className="hidden sm:block text-[10px] text-white/40 uppercase tracking-widest">Hygiene System · LPU</span>

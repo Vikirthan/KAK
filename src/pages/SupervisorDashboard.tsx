@@ -3,7 +3,7 @@ import { LogOut, Volume2, VolumeX, X, ZoomIn, MapPin, User, Phone, Clock, Camera
 import { useAuth } from '../hooks/useAuth';
 import { getComplaintsForSupervisor, updateComplaint, uploadPhotoToSupabase, getComplaints } from '../services/complaintService';
 import { getSupStat, recordResolutionStats } from '../services/statService';
-import { formatTime, formatDateTime, msUntil, formatCountdown } from '../lib/types';
+import { formatTime, formatDateTime, msUntil, formatCountdown, ISSUE_ICONS } from '../lib/types';
 import type { Complaint } from '../lib/types';
 
 // ─── Photo Lightbox with Download ────────────────────────────────
@@ -147,14 +147,124 @@ export default function SupervisorDashboard() {
     const [stats, setStats] = useState({ total: 0, resolved: 0, missed: 0, blackPoints: 0, avgRating: 0 });
     const [sirenOn, setSirenOn] = useState(true);
     const [resolveModal, setResolveModal] = useState<{ show: boolean; ticketId: string | null }>({ show: false, ticketId: null });
+    const [explanationModal, setExplanationModal] = useState<Complaint | null>(null);
     const [resPhotoData, setResPhotoData] = useState<string | null>(null);
     const [resolving, setResolving] = useState(false);
+    const [activeCall, setActiveCall] = useState<Complaint | null>(null);
+    const [seenTickets, setSeenTickets] = useState<Set<string>>(new Set());
+    const [isSpeaking, setIsSpeaking] = useState(false);
+    const sirenRef = useRef<HTMLAudioElement | null>(null);
     const timerRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+
+    // Notification Permission
+    const requestNotifications = async () => {
+        if ('Notification' in window) {
+            const permission = await Notification.requestPermission();
+            if (permission === 'granted') {
+                console.log('Notification permission granted.');
+            }
+        }
+    };
+
+    useEffect(() => {
+        requestNotifications();
+
+        // Wake Lock to keep screen ON
+        let wakeLock: any = null;
+        const requestWakeLock = async () => {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await (navigator as any).wakeLock.request('screen');
+                    console.log('Wake Lock active');
+                }
+            } catch (err) { console.warn('Wake Lock failed', err); }
+        };
+        requestWakeLock();
+
+        // Re-request on visibility change
+        const handleVisibilityChange = () => {
+            if (wakeLock !== null && document.visibilityState === 'visible') requestWakeLock();
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            wakeLock?.release();
+        };
+    }, []);
+
+    const sendBrowserNotification = (c: Complaint) => {
+        if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('🚨 NEW KAK COMPLAINT', {
+                body: `${c.issueType} at Block ${c.block}. Action Required!`,
+                icon: '/KAK/icon-192.png',
+                vibrate: [200, 100, 200],
+                tag: c.ticketId
+            });
+        }
+    };
+
+    // Initialize siren audio
+    useEffect(() => {
+        sirenRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/951/951-preview.mp3'); // A loud alert sound
+        sirenRef.current.loop = true;
+        return () => {
+            sirenRef.current?.pause();
+            window.speechSynthesis.cancel();
+        };
+    }, []);
+
+    const playSiren = () => {
+        if (sirenOn && sirenRef.current) {
+            sirenRef.current.currentTime = 0;
+            sirenRef.current.play().catch(e => console.log('Siren play blocked:', e));
+        }
+    };
+
+    const stopSiren = () => {
+        if (sirenRef.current) {
+            sirenRef.current.pause();
+            sirenRef.current.currentTime = 0;
+        }
+    };
+
+    const speakIssue = (c: Complaint) => {
+        if (!window.speechSynthesis || isSpeaking) return;
+        window.speechSynthesis.cancel();
+        const text = `Incoming complaint: ${c.issueType}. Location: Block ${c.block}. Reported by ${c.studentName}. Issue details: ${c.description || 'No description provided'}.`;
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 0.9;
+        utterance.onstart = () => setIsSpeaking(true);
+        utterance.onend = () => setIsSpeaking(false);
+        window.speechSynthesis.speak(utterance);
+    };
 
     const loadData = useCallback(async () => {
         if (!user) return;
         try {
             const all = await getComplaintsForSupervisor(user.uid);
+
+            // Detect NEW unaccepted complaints for the "Call" UI
+            const newUnaccepted = all.filter(c =>
+                c.status === 'pending_acceptance' &&
+                !seenTickets.has(c.ticketId)
+            );
+
+            if (newUnaccepted.length > 0 && !activeCall) {
+                const latest = newUnaccepted[0];
+                setActiveCall(latest);
+                playSiren();
+                speakIssue(latest);
+                sendBrowserNotification(latest);
+
+                // Mark all current unaccepted as "seen" to prevent duplicate triggers
+                setSeenTickets(prev => {
+                    const next = new Set(prev);
+                    newUnaccepted.forEach(c => next.add(c.ticketId));
+                    return next;
+                });
+            }
+
             setComplaints(all);
             const stat = await getSupStat(user.uid);
             setStats({
@@ -166,7 +276,7 @@ export default function SupervisorDashboard() {
             });
         } catch (err) { console.error('Sup load error', err); }
         finally { setLoading(false); }
-    }, [user?.uid]);
+    }, [user?.uid, seenTickets, activeCall, sirenOn, isSpeaking]);
 
     useEffect(() => {
         loadData();
@@ -185,11 +295,13 @@ export default function SupervisorDashboard() {
 
     const acceptComplaint = async (c: Complaint) => {
         const now = new Date();
+        const deadline = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
         await updateComplaint(c.ticketId, {
             status: 'pending_supervisor',
-            supervisorDeadline: new Date(now.getTime() + 30 * 60 * 1000).toISOString(),
+            supervisorDeadline: deadline,
             timeline: [...(c.timeline || []), { event: 'Complaint Accepted by Supervisor - 30m Resolution Timer Started', time: now.toISOString(), by: user.uid }],
         });
+        setExplanationModal({ ...c, supervisorDeadline: deadline });
         await loadData();
     };
 
@@ -232,6 +344,20 @@ export default function SupervisorDashboard() {
         } finally { setResolving(false); }
     };
 
+    const handleCallAccept = async () => {
+        if (!activeCall) return;
+        stopSiren();
+        window.speechSynthesis.cancel();
+        await acceptComplaint(activeCall);
+        setActiveCall(null);
+    };
+
+    const handleCallSilence = () => {
+        stopSiren();
+        window.speechSynthesis.cancel();
+        setActiveCall(null);
+    };
+
     if (loading && complaints.length === 0) {
         return (
             <div className="min-h-screen bg-[#0f0f1a] flex items-center justify-center">
@@ -242,10 +368,81 @@ export default function SupervisorDashboard() {
 
     return (
         <div className="min-h-screen bg-[#0f0f1a] text-white font-['Inter',sans-serif]">
+            {/* Incoming Call Overlay */}
+            {activeCall && (
+                <div className="fixed inset-0 z-[200] bg-black/95 backdrop-blur-2xl flex flex-col items-center justify-center p-6 animate-in fade-in zoom-in duration-300">
+                    {/* Animated Pulsing Background */}
+                    <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-cyan-500/20 rounded-full blur-[120px] animate-pulse" />
+                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[300px] h-[300px] bg-blue-500/30 rounded-full blur-[80px] animate-bounce" style={{ animationDuration: '3s' }} />
+                    </div>
+
+                    <div className="relative z-10 flex flex-col items-center text-center max-w-lg w-full">
+                        <div className="w-24 h-24 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-full flex items-center justify-center mb-8 shadow-2xl shadow-cyan-500/40 animate-bounce">
+                            <Phone size={48} className="text-white animate-pulse" />
+                        </div>
+
+                        <div className="mb-8">
+                            <h2 className="text-3xl font-black mb-2 tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-400">
+                                NEW COMPLAINT ARRIVED
+                            </h2>
+                            <p className="text-white/60 font-bold uppercase tracking-[0.2em] text-sm">Priority Intervention Required</p>
+                        </div>
+
+                        <div className="w-full bg-white/5 border border-white/10 rounded-3xl p-6 mb-10 backdrop-blur-md">
+                            <div className="flex flex-col gap-4 mb-4">
+                                <div className="flex items-center justify-center gap-3">
+                                    <span className="text-4xl">{ISSUE_ICONS[activeCall.issueType] || '📋'}</span>
+                                    <h3 className="text-2xl font-black">{activeCall.issueType}</h3>
+                                </div>
+                                <div className="h-px bg-white/10 w-full" />
+                                <div className="grid grid-cols-2 gap-4 text-left">
+                                    <div>
+                                        <p className="text-[10px] text-white/40 uppercase font-bold tracking-widest mb-1">Student</p>
+                                        <p className="font-bold flex items-center gap-2"><User size={14} className="text-cyan-400" /> {activeCall.studentName}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] text-white/40 uppercase font-bold tracking-widest mb-1">Location</p>
+                                        <p className="font-bold flex items-center gap-2"><MapPin size={14} className="text-cyan-400" /> Block {activeCall.block}</p>
+                                    </div>
+                                </div>
+                                {activeCall.description && (
+                                    <div className="mt-2 p-4 bg-white/[0.03] rounded-2xl text-sm italic text-white/50 border border-white/5">
+                                        "{activeCall.description}"
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 w-full">
+                            <button
+                                onClick={handleCallSilence}
+                                className="flex flex-col items-center gap-3 p-4 rounded-3xl bg-white/5 hover:bg-white/10 border border-white/10 transition-all group"
+                            >
+                                <div className="w-14 h-14 rounded-full bg-white/10 flex items-center justify-center group-hover:scale-110 transition-transform">
+                                    <VolumeX size={24} className="text-white/60" />
+                                </div>
+                                <span className="font-bold text-sm text-white/60">Silence</span>
+                            </button>
+
+                            <button
+                                onClick={handleCallAccept}
+                                className="flex flex-col items-center gap-3 p-4 rounded-3xl bg-gradient-to-br from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 shadow-xl shadow-emerald-500/20 transition-all group animate-pulse"
+                            >
+                                <div className="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center group-hover:scale-110 transition-transform">
+                                    <CheckCircle size={24} className="text-white" />
+                                </div>
+                                <span className="font-bold text-sm text-white">Accept Now</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Navbar */}
             <nav className="sticky top-0 z-50 bg-[#161625]/80 backdrop-blur-xl border-b border-white/5 py-3 px-4 md:px-6 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                    <img src="/icon-192.png" alt="KAK" className="w-9 h-9 rounded-lg" />
+                    <img src="icon-192.png" alt="KAK" className="w-9 h-9 rounded-lg" />
                     <div>
                         <span className="text-lg font-bold tracking-tight">SUPERVISOR</span>
                         <span className="hidden sm:block text-[10px] text-white/40 uppercase tracking-widest">Block {user.block || '–'} Dashboard</span>
@@ -512,7 +709,8 @@ export default function SupervisorDashboard() {
 
             {/* Resolve Modal */}
             {resolveModal.show && (
-                <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                // ... (existing resolve modal)
+                <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="bg-[#1a1a2e] border border-white/10 rounded-2xl p-6 w-full max-w-md">
                         <div className="flex items-center gap-2 mb-1"><Camera size={20} className="text-cyan-400" /><h3 className="text-lg font-black">Upload Resolution Photo</h3></div>
                         <p className="text-white/40 text-xs mb-1">Ticket: <span className="font-mono text-white/60">{resolveModal.ticketId}</span></p>
@@ -537,6 +735,76 @@ export default function SupervisorDashboard() {
                             <button onClick={confirmResolve} disabled={resolving || !resPhotoData}
                                 className="flex-1 bg-gradient-to-r from-emerald-600 to-cyan-600 py-3 rounded-xl font-bold text-sm disabled:opacity-30 transition-all flex items-center justify-center gap-2">
                                 {resolving ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Uploading…</> : <><CheckCircle size={16} /> Confirm Resolved</>}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Post-Acceptance Explanation Modal */}
+            {explanationModal && (
+                <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-300">
+                    <div className="bg-[#1a1a2e] border border-cyan-500/20 rounded-[32px] p-8 w-full max-w-xl shadow-2xl shadow-cyan-500/10">
+                        <div className="flex flex-col items-center text-center mb-8">
+                            <div className="w-16 h-16 bg-emerald-500/20 rounded-full flex items-center justify-center mb-4">
+                                <CheckCircle size={32} className="text-emerald-400" />
+                            </div>
+                            <h3 className="text-2xl font-black mb-1">TASK INITIALIZED</h3>
+                            <p className="text-white/40 text-sm">Follow instructions below for resolution</p>
+                        </div>
+
+                        <div className="space-y-6 mb-8">
+                            <div className="bg-white/5 rounded-2xl p-5 border border-white/10">
+                                <div className="flex items-center gap-3 mb-4">
+                                    <span className="text-3xl">{ISSUE_ICONS[explanationModal.issueType] || '📋'}</span>
+                                    <div>
+                                        <p className="text-[10px] text-white/30 uppercase font-black tracking-widest leading-none mb-1">Assigned Issue</p>
+                                        <p className="text-xl font-black">{explanationModal.issueType}</p>
+                                    </div>
+                                </div>
+                                <div className="h-px bg-white/5 mb-4" />
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="flex items-start gap-2.5">
+                                        <MapPin size={16} className="text-cyan-400 mt-0.5" />
+                                        <div>
+                                            <p className="text-[10px] text-white/30 uppercase font-bold tracking-widest mb-0.5">Location</p>
+                                            <p className="text-sm font-bold">Block {explanationModal.block}</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-start gap-2.5">
+                                        <Clock size={16} className="text-amber-400 mt-0.5" />
+                                        <div>
+                                            <p className="text-[10px] text-white/30 uppercase font-bold tracking-widest mb-0.5">Time Limit</p>
+                                            <p className="text-sm font-bold text-amber-400">30 Minutes</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="p-5 bg-indigo-500/5 border border-indigo-500/10 rounded-2xl">
+                                <div className="flex items-center gap-2 mb-2 text-indigo-400">
+                                    <Zap size={16} className="fill-indigo-400" />
+                                    <span className="text-xs font-black uppercase tracking-widest">Resolution Steps</span>
+                                </div>
+                                <ul className="text-sm text-white/60 space-y-2 list-disc pl-4">
+                                    <li>Go to <span className="text-white font-bold">Block {explanationModal.block}</span> immediately.</li>
+                                    <li>Perform necessary repairs or cleaning for <span className="text-white font-bold">{explanationModal.issueType}</span>.</li>
+                                    <li>Once fixed, click <span className="text-emerald-400 font-bold">"Mark as Resolved"</span>.</li>
+                                    <li>You <span className="text-white font-bold underline">MUST</span> take a photo of the completed work.</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div className="flex flex-col items-center gap-4">
+                            <div className="flex items-center gap-4 bg-white/5 px-6 py-3 rounded-2xl border border-white/5 w-full justify-between">
+                                <span className="text-sm text-white/40 font-bold">Time remaining for resolution:</span>
+                                {explanationModal.supervisorDeadline && (
+                                    <PremiumTimer ticketId={`expl-${explanationModal.ticketId}`} deadline={explanationModal.supervisorDeadline} totalMs={30 * 60 * 1000} timerRef={timerRef} />
+                                )}
+                            </div>
+                            <button onClick={() => setExplanationModal(null)}
+                                className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 py-4 rounded-2xl font-black text-lg transition-all shadow-xl shadow-cyan-500/20">
+                                I UNDERSTAND, START NOW
                             </button>
                         </div>
                     </div>
