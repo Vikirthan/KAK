@@ -169,6 +169,14 @@ export default function SupervisorDashboard() {
     useEffect(() => {
         requestNotifications();
 
+        // Register UID with Service Worker for Background Monitoring
+        if (user?.uid && navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage({
+                type: 'SET_SUPERVISOR_ID',
+                uid: user.uid
+            });
+        }
+
         // Wake Lock to keep screen ON
         let wakeLock: any = null;
         const requestWakeLock = async () => {
@@ -198,9 +206,9 @@ export default function SupervisorDashboard() {
             new Notification('🚨 NEW KAK COMPLAINT', {
                 body: `${c.issueType} at Block ${c.block}. Action Required!`,
                 icon: '/KAK/icon-192.png',
-                vibrate: [200, 100, 200],
-                tag: c.ticketId
-            });
+                tag: c.ticketId,
+                vibrate: [200, 100, 200]
+            } as any);
         }
     };
 
