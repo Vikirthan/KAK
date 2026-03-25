@@ -29,16 +29,14 @@ export async function getComplaints(filter?: {
 
 /** Get complaints for a specific supervisor UID */
 export async function getComplaintsForSupervisor(supUID: string): Promise<Complaint[]> {
-    const all = await getComplaints();
-    const filtered = all.filter((c: Complaint) => c.assignedSupervisor === supUID);
-    console.log(`[KAK-DEBUG] Filtering for Supervisor: ${supUID} | Found: ${filtered.length} total: ${all.length}`);
+    const filtered = await getComplaints({ assignedSupervisor: supUID });
+    console.log(`[KAK-DEBUG] Query for Supervisor: ${supUID} | Found: ${filtered.length}`);
     return filtered;
 }
 
 /** Get all escalated (pending_ao) complaints */
 export async function getEscalatedComplaints(): Promise<Complaint[]> {
-    const all = await getComplaints();
-    return all.filter((c: Complaint) => c.status === 'pending_ao');
+    return getComplaints({ status: 'pending_ao' });
 }
 
 /** Add a new complaint to Supabase */
@@ -98,10 +96,42 @@ export async function uploadPhotoToSupabase(fileOrDataURL: string | File, fileNa
 export async function deletePhotoFromSupabase(publicURL: string): Promise<void> {
     if (!publicURL) return;
     try {
-        const path = publicURL.split('/hygiene-reports/').pop();
-        if (!path) return;
-        const { error } = await supabase.storage.from('hygiene-reports').remove([path]);
-        if (error) console.error('Error deleting photo:', error);
+        let bucket: string | null = null;
+        let objectPath: string | null = null;
+
+        // Supabase public URL format:
+        // .../storage/v1/object/public/<bucket>/<objectPath>
+        const publicMarker = '/storage/v1/object/public/';
+        const markerIndex = publicURL.indexOf(publicMarker);
+        if (markerIndex !== -1) {
+            const remainder = publicURL.slice(markerIndex + publicMarker.length).split('?')[0];
+            const slash = remainder.indexOf('/');
+            if (slash > 0) {
+                bucket = remainder.slice(0, slash);
+                objectPath = remainder.slice(slash + 1);
+            }
+        }
+
+        // Fallback support for legacy hardcoded bucket assumptions.
+        if (!bucket || !objectPath) {
+            const legacyBuckets = ['hygiene-reports', 'hygine-reports'];
+            for (const b of legacyBuckets) {
+                const key = `/${b}/`;
+                if (publicURL.includes(key)) {
+                    bucket = b;
+                    objectPath = publicURL.split(key).pop()?.split('?')[0] || null;
+                    break;
+                }
+            }
+        }
+
+        if (!bucket || !objectPath) {
+            console.error('Photo deletion failed: unable to parse bucket/path from URL', publicURL);
+            return;
+        }
+
+        const { error } = await supabase.storage.from(bucket).remove([objectPath]);
+        if (error) console.error('Error deleting photo:', { bucket, objectPath, error });
     } catch (err) {
         console.error('Photo deletion failed:', err);
     }

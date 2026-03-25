@@ -3,8 +3,22 @@ import { LogOut, RefreshCcw, Trash2, Search, AlertTriangle } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
 import { formatDateTime } from '../lib/types';
+import { deletePhotoFromSupabase } from '../services/complaintService';
 
-interface DBComplaint { id: string; ticket_id: string; block: string; issue_type: string; status: string; assigned_supervisor: string; student_rating: number; submitted_at: string; }
+interface DBComplaint {
+    id: string;
+    ticket_id: string;
+    block: string;
+    issue_type: string;
+    status: string;
+    assigned_supervisor: string;
+    student_rating: number;
+    submitted_at: string;
+    photo_url?: string | null;
+    supervisor_photo?: string | null;
+    ao_resolution_photo?: string | null;
+    timeline?: Array<{ event: string; time: string; by: string }>;
+}
 interface DBSupervisor { supervisor_uid: string; total_resolved: number; total_missed: number; black_points: number; avg_rating: number; }
 
 export default function MasterAdmin() {
@@ -18,6 +32,7 @@ export default function MasterAdmin() {
     const [wipePassword, setWipePassword] = useState('');
     const [wipeError, setWipeError] = useState(false);
     const [wiping, setWiping] = useState(false);
+    const [wipingPhotos, setWipingPhotos] = useState(false);
     const [tab, setTab] = useState<'complaints' | 'supervisors'>('complaints');
 
     const loadData = useCallback(async () => {
@@ -45,10 +60,45 @@ export default function MasterAdmin() {
     const activeCount = complaints.filter(c => !['resolved', 'closed', 'ao_resolved'].includes(c.status)).length;
 
     const deleteComplaint = async (id: string) => {
-        if (!confirm('Delete this ticket permanently from database?')) return;
-        const { error } = await supabase.from('complaints').delete().eq('id', id);
-        if (error) alert('Delete failed: ' + error.message);
-        else await loadData();
+        if (!confirm('Delete complaint photos only? Complaint data will be kept.')) return;
+
+        const { data: complaint, error: fetchError } = await supabase
+            .from('complaints')
+            .select('ticket_id, photo_url, supervisor_photo, ao_resolution_photo, timeline')
+            .eq('id', id)
+            .single();
+
+        if (fetchError || !complaint) {
+            alert('Failed to fetch complaint: ' + (fetchError?.message || 'Not found'));
+            return;
+        }
+
+        try {
+            if (complaint.photo_url) await deletePhotoFromSupabase(complaint.photo_url);
+            if (complaint.supervisor_photo) await deletePhotoFromSupabase(complaint.supervisor_photo);
+            if (complaint.ao_resolution_photo) await deletePhotoFromSupabase(complaint.ao_resolution_photo);
+
+            const timeline = Array.isArray(complaint.timeline) ? complaint.timeline : [];
+            const { error: updateError } = await supabase
+                .from('complaints')
+                .update({
+                    photo_url: null,
+                    supervisor_photo: null,
+                    ao_resolution_photo: null,
+                    timeline: [...timeline, { event: 'Admin cleared complaint photos', time: new Date().toISOString(), by: user.uid }],
+                })
+                .eq('id', id);
+
+            if (updateError) {
+                alert('Photo cleanup failed: ' + updateError.message);
+                return;
+            }
+
+            alert(`Photos removed for ticket ${complaint.ticket_id}. Complaint record is retained.`);
+            await loadData();
+        } catch (err) {
+            alert('Photo cleanup failed: ' + (err instanceof Error ? err.message : String(err)));
+        }
     };
 
     const resetSupervisorStats = async (uid: string) => {
@@ -79,6 +129,72 @@ export default function MasterAdmin() {
             console.error('WIPE FAILED:', err);
             alert('WIPE FAILED: ' + (err instanceof Error ? err.message : String(err)));
             setWiping(false);
+        }
+    };
+
+    const wipeStoredPhotos = async () => {
+        if (!confirm('Wipe all stored complaint photos? Complaint data will remain in the database.')) return;
+        setWipingPhotos(true);
+
+        try {
+            const { data, error } = await supabase
+                .from('complaints')
+                .select('id, ticket_id, photo_url, supervisor_photo, ao_resolution_photo, timeline')
+                .or('photo_url.not.is.null,supervisor_photo.not.is.null,ao_resolution_photo.not.is.null');
+
+            if (error) throw error;
+
+            const rows = (data || []) as Array<{
+                id: string;
+                ticket_id: string;
+                photo_url?: string | null;
+                supervisor_photo?: string | null;
+                ao_resolution_photo?: string | null;
+                timeline?: Array<{ event: string; time: string; by: string }>;
+            }>;
+
+            if (rows.length === 0) {
+                alert('No stored complaint photos found to wipe.');
+                return;
+            }
+
+            let cleaned = 0;
+            let failed = 0;
+
+            for (const row of rows) {
+                try {
+                    if (row.photo_url) await deletePhotoFromSupabase(row.photo_url);
+                    if (row.supervisor_photo) await deletePhotoFromSupabase(row.supervisor_photo);
+                    if (row.ao_resolution_photo) await deletePhotoFromSupabase(row.ao_resolution_photo);
+
+                    const timeline = Array.isArray(row.timeline) ? row.timeline : [];
+                    const { error: updateError } = await supabase
+                        .from('complaints')
+                        .update({
+                            photo_url: null,
+                            supervisor_photo: null,
+                            ao_resolution_photo: null,
+                            timeline: [...timeline, { event: 'Admin bulk wiped stored photos', time: new Date().toISOString(), by: user.uid }],
+                        })
+                        .eq('id', row.id);
+
+                    if (updateError) {
+                        failed += 1;
+                    } else {
+                        cleaned += 1;
+                    }
+                } catch (rowErr) {
+                    console.error('Bulk photo wipe failed for ticket', row.ticket_id, rowErr);
+                    failed += 1;
+                }
+            }
+
+            alert(`Photo wipe complete. Cleared: ${cleaned}, Failed: ${failed}. Complaint data was retained.`);
+            await loadData();
+        } catch (err) {
+            alert('Photo wipe failed: ' + (err instanceof Error ? err.message : String(err)));
+        } finally {
+            setWipingPhotos(false);
         }
     };
 
@@ -129,6 +245,10 @@ export default function MasterAdmin() {
                     <button onClick={loadData} className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 border border-white/5 px-4 py-2.5 rounded-xl text-sm font-bold transition-all">
                         <RefreshCcw size={14} /> Refresh
                     </button>
+                    <button onClick={wipeStoredPhotos} disabled={wipingPhotos}
+                        className="flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 text-amber-300 px-4 py-2.5 rounded-xl text-sm font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                        <Trash2 size={14} /> {wipingPhotos ? 'Wiping Photos…' : 'Wipe Stored Photos'}
+                    </button>
                     <button onClick={() => { setWipeModal(true); setWipePassword(''); setWipeError(false); }}
                         className="flex items-center gap-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 px-4 py-2.5 rounded-xl text-sm font-bold transition-all">
                         <AlertTriangle size={14} /> Nuclear Wipe
@@ -177,7 +297,7 @@ export default function MasterAdmin() {
                                             <td className="p-3">{c.student_rating ? c.student_rating + ' ⭐' : '—'}</td>
                                             <td className="p-3 text-white/40 text-xs">{c.submitted_at ? formatDateTime(new Date(c.submitted_at)) : '–'}</td>
                                             <td className="p-3 text-center">
-                                                <button onClick={() => deleteComplaint(c.id)} className="text-red-400 hover:text-red-300 transition-colors" title="Delete Ticket"><Trash2 size={16} /></button>
+                                                <button onClick={() => deleteComplaint(c.id)} className="text-red-400 hover:text-red-300 transition-colors" title="Clear Complaint Photos"><Trash2 size={16} /></button>
                                             </td>
                                         </tr>
                                     ))}
