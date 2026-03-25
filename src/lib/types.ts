@@ -83,6 +83,25 @@ export const ISSUE_ICONS: Record<string, string> = {
     'Other': '📋',
 };
 
+// Hindi translations for issue types (for TTS voice announcements)
+export const ISSUE_HINDI: Record<string, string> = {
+    'Dirty/Unhygienic': 'गंदा या अस्वच्छ',
+    'Water Leakage': 'पानी का रिसाव',
+    'Broken Fixture': 'टूटा हुआ फिक्सचर',
+    'Blocked Drain': 'नाली बंद है',
+    'No Water Supply': 'पानी की सप्लाई नहीं है',
+    'Bad Odour': 'बदबू आ रही है',
+    'Broken Door/Lock': 'दरवाज़ा या ताला टूटा हुआ है',
+    'Other': 'अन्य समस्या',
+};
+
+// Hindi floor labels
+export const FLOOR_HINDI: Record<string, string> = {
+    '2nd': 'दूसरी मंज़िल',
+    '3rd': 'तीसरी मंज़िल',
+    '5th': 'पाँचवीं मंज़िल',
+};
+
 // Status display config
 export const STATUS_META: Record<string, { label: string; cls: string }> = {
     pending_acceptance: { label: '🆕 Awaiting Acceptance (10m)', cls: 'status-pending' },
@@ -100,9 +119,9 @@ export const STATUS_META: Record<string, { label: string; cls: string }> = {
 
 // Block-floor options for complaint form
 export const BLOCK_OPTIONS = [
-    { value: '36-2nd', label: 'Block 36 – 2nd Floor' },
-    { value: '36-3rd', label: 'Block 36 – 3rd Floor' },
-    { value: '36-5th', label: 'Block 36 – 5th Floor' },
+    { value: '36-2nd', label: 'Block 36 – Level 2' },
+    { value: '36-3rd', label: 'Block 36 – Level 3' },
+    { value: '36-5th', label: 'Block 36 – Level 5' },
     { value: '35-2nd', label: 'Block 35 – 2nd Floor' },
     { value: '35-3rd', label: 'Block 35 – 3rd Floor' },
     { value: '35-5th', label: 'Block 35 – 5th Floor' },

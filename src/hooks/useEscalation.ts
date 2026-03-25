@@ -6,8 +6,10 @@ import { addBlackPoint } from '../services/statService';
 import { useEffect } from 'react';
 
 /** Background escalation engine — runs in App component */
-export function useEscalation() {
+export function useEscalation(enabled = true) {
     useEffect(() => {
+        if (!enabled) return;
+
         const run = async () => {
             try {
                 await runEscalationEngine();
@@ -16,9 +18,9 @@ export function useEscalation() {
             }
         };
         run();
-        const interval = setInterval(run, 10000);
+        const interval = setInterval(run, 15000);
         return () => clearInterval(interval);
-    }, []);
+    }, [enabled]);
 }
 
 async function runEscalationEngine() {

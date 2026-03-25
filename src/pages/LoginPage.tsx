@@ -1,11 +1,12 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Eye, EyeOff, ArrowRight, Clock, Camera, Shield } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { KAK_USERS, ROLE_META } from '../lib/types';
 
 export default function LoginPage() {
     const navigate = useNavigate();
+    const location = useLocation();
     const { login } = useAuth();
     const [uid, setUid] = useState('');
     const [password, setPassword] = useState('');
@@ -13,6 +14,10 @@ export default function LoginPage() {
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
     const [detectedUser, setDetectedUser] = useState<{ name: string; icon: string; label: string } | null>(null);
+
+    useEffect(() => {
+        console.log('%c KAK PORTAL v2.1 - ACTIVE ', 'background: #222; color: #bada55; font-size: 20px;');
+    }, []);
 
     const handleUidChange = (val: string) => {
         setUid(val);
@@ -47,6 +52,10 @@ export default function LoginPage() {
             student: '/student', supervisor: '/supervisor',
             ao: '/ao', vendor: '/vendor', admin: '/master',
         };
+        if (user.role === 'student' && location.search) {
+            navigate(`/student${location.search}`);
+            return;
+        }
         navigate(routes[user.role] || '/login');
     };
 

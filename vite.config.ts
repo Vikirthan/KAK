@@ -10,8 +10,11 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.js',
       registerType: 'autoUpdate',
-      includeAssets: ['icon-192.png', 'icon-512.png', 'vite.svg', 'sw-custom.js'],
+      includeAssets: ['icon-192.png', 'icon-512.png', 'vite.svg'],
       manifest: {
         name: 'KAK Modern Management Portal',
         short_name: 'KAK Portal',

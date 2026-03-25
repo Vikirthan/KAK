@@ -1,17 +1,78 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import { LogOut, Plus, QrCode, ClipboardList, CheckCircle2, AlertTriangle, Clock, Star, Camera, Info, Send, MapPin, Wrench, ZoomIn, X, ArrowLeft, ChevronRight, ShowerHead, BarChart3, MessageSquare } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
-import { getComplaints, addComplaint, updateComplaint, uploadPhotoToSupabase } from '../services/complaintService';
+import { getComplaints, addComplaint, updateComplaint, uploadPhotoToSupabase, getStats } from '../services/complaintService';
+import { sendPushToSupervisor } from '../services/pushService';
 import { addRatingToStats } from '../services/statService';
 import { STUDENT_PROFILES, BLOCK_OPTIONS, ISSUE_TYPES, STATUS_META, generateTicketId, formatDateTime, msUntil, formatCountdown } from '../lib/types';
 import type { Complaint } from '../lib/types';
 
+const QR_LOCATION_MAP: Record<string, string> = {
+    B36F1: '36-2nd',
+    B36F2: '36-3rd',
+    B36F5: '36-5th',
+};
+
+function resolveQrToBlock(input: string): string | null {
+    const raw = (input || '').trim();
+    if (!raw) return null;
+
+    // Case 1: Full URL payload like ...#/student?loc=B36F1 or ...?block=36-2nd
+    try {
+        const maybeUrl = new URL(raw);
+        const hash = maybeUrl.hash || '';
+        const queryPart = hash.includes('?') ? hash.split('?')[1] : maybeUrl.search.slice(1);
+        const params = new URLSearchParams(queryPart);
+        const loc = (params.get('loc') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        const block = (params.get('block') || '').trim();
+        if (loc && QR_LOCATION_MAP[loc]) return QR_LOCATION_MAP[loc];
+        if (block && BLOCK_OPTIONS.some((o) => o.value === block)) return block;
+    } catch {
+        // Not a URL payload. Continue parsing as plain code/text.
+    }
+
+    // Case 2: Code payload like B36F1
+    const compact = raw.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (QR_LOCATION_MAP[compact]) return QR_LOCATION_MAP[compact];
+
+    // Case 3: Human-readable payload like "block-36-floor-2nd" or "Block 36 Level 5"
+    const normalized = raw
+        .toLowerCase()
+        .replace(/\s+/g, '')
+        .replace(/_/g, '-')
+        .replace(/level/g, 'floor')
+        .replace(/[^a-z0-9-]/g, '');
+
+    const match = normalized.match(/block-?(\d+).*floor-?(\d+|1st|2nd|3rd|5th)/);
+    if (match) {
+        const blockNo = match[1];
+        const floor = match[2];
+        const floorMap: Record<string, string> = {
+            '1': '1st',
+            '2': '2nd',
+            '3': '3rd',
+            '5': '5th',
+            '1st': '1st',
+            '2nd': '2nd',
+            '3rd': '3rd',
+            '5th': '5th',
+        };
+        const value = `${blockNo}-${floorMap[floor] || floor}`;
+        if (BLOCK_OPTIONS.some((o) => o.value === value)) return value;
+    }
+
+    return null;
+}
+
 export default function StudentDashboard() {
     const { logout, getSession } = useAuth();
+    const location = useLocation();
     const user = getSession();
+    console.log('[DEBUG] StudentDashboard rendering for user:', user?.uid);
     const [view, setView] = useState<'dashboard' | 'form'>('dashboard');
     const [complaints, setComplaints] = useState<Complaint[]>([]);
-    const [allComplaints, setAllComplaints] = useState<Complaint[]>([]);
+    const [globalStats, setGlobalStats] = useState({ total: 0, resolved: 0 });
     const [loading, setLoading] = useState(true);
     const [ratingModal, setRatingModal] = useState<{ show: boolean; ticketId: string | null }>({ show: false, ticketId: null });
     const [chosenRating, setChosenRating] = useState(0);
@@ -29,16 +90,19 @@ export default function StudentDashboard() {
     const loadData = useCallback(async () => {
         if (!user) return;
         try {
-            const all = await getComplaints();
-            setAllComplaints(all);
-            setComplaints(all.filter((c: Complaint) => c.studentUID === user.uid));
+            const [mine, global] = await Promise.all([
+                getComplaints({ studentUID: user.uid }),
+                getStats(),
+            ]);
+            setComplaints(mine);
+            setGlobalStats(global);
         } catch (err) { console.error('Failed to load data', err); }
         finally { setLoading(false); }
     }, [user?.uid]);
 
     useEffect(() => {
         loadData();
-        const interval = setInterval(loadData, 3000);
+        const interval = setInterval(loadData, 8000);
         return () => { clearInterval(interval); Object.values(timerRef.current).forEach(clearInterval); };
     }, [loadData]);
 
@@ -50,6 +114,24 @@ export default function StudentDashboard() {
         }
     }, [user?.uid]);
 
+    // QR/deep-link prefill: #/student?loc=B36F1 or #/student?block=36-2nd
+    useEffect(() => {
+        if (!user) return;
+
+        const query = location.search || '';
+        if (!query) return;
+
+        const params = new URLSearchParams(query);
+        const loc = params.get('loc') || '';
+        const block = params.get('block') || '';
+        const candidate = resolveQrToBlock(loc || block || query);
+        if (!candidate) return;
+
+        setFormData((prev) => ({ ...prev, block: candidate }));
+        setView('form');
+        setFormStep(2);
+    }, [user?.uid, location.search]);
+
     if (!user) return null;
 
     const mine = complaints;
@@ -57,8 +139,8 @@ export default function StudentDashboard() {
     const resolved = mine.filter((c: Complaint) => ['resolved', 'closed', 'ao_resolved'].includes(c.status)).length;
     const missed = mine.filter((c: Complaint) => ['pending_ao', 'closed_overdue', 'escalated_to_vendor'].includes(c.status)).length;
     const pending = mine.filter((c: Complaint) => ['pending_acceptance', 'pending_supervisor', 'pending_approval', 'pending_ao_review'].includes(c.status)).length;
-    const globalTotal = allComplaints.length;
-    const globalResolved = allComplaints.filter((c: Complaint) => ['resolved', 'closed', 'ao_resolved'].includes(c.status)).length;
+    const globalTotal = globalStats.total;
+    const globalResolved = globalStats.resolved;
 
     const needsRating = mine.find((c: Complaint) => c.status === 'pending_approval');
 
@@ -75,6 +157,21 @@ export default function StudentDashboard() {
         setFormStep(1);
     };
 
+    const handleScanQrClick = () => {
+        const payload = window.prompt('Paste scanned QR value (URL or code):\nExamples: B36F1, B36F2, B36F5');
+        if (!payload) return;
+
+        const mapped = resolveQrToBlock(payload);
+        if (!mapped) {
+            alert('Invalid QR value. Use a valid KAK location QR.');
+            return;
+        }
+
+        setFormData((prev) => ({ ...prev, block: mapped }));
+        setView('form');
+        setFormStep(2);
+    };
+
     const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -86,6 +183,17 @@ export default function StudentDashboard() {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        console.log('[DEBUG] Submit button clicked!');
+        
+        // Detailed validation logs
+        if (!formData.name) console.warn('[DEBUG] Missing field: name');
+        if (!formData.regNo) console.warn('[DEBUG] Missing field: regNo');
+        if (!formData.phone) console.warn('[DEBUG] Missing field: phone');
+        if (!formData.block) console.warn('[DEBUG] Missing field: block');
+        if (!formData.issueType) console.warn('[DEBUG] Missing field: issueType');
+        if (!photoData) console.warn('[DEBUG] Missing field: photoData');
+        if (!declaration) console.warn('[DEBUG] Missing field: declaration');
+
         if (!formData.name || !formData.regNo || !formData.phone || !formData.block || !formData.issueType || !photoData || !declaration) {
             alert('Please fill all required fields, attach a photo, and confirm the declaration.');
             return;
@@ -95,7 +203,10 @@ export default function StudentDashboard() {
             const ticketId = generateTicketId();
             const finalPhotoURL = await uploadPhotoToSupabase(photoData, `${ticketId}_issue.jpg`);
             const now = new Date();
+            
             const blockNum = formData.block.split('-')[0];
+            const assignedSupervisor = 'SUP-' + blockNum; 
+            console.log('[DEBUG] Dynamic assignment to:', assignedSupervisor);
 
             const complaint: Complaint = {
                 ticketId,
@@ -110,13 +221,26 @@ export default function StudentDashboard() {
                 status: 'pending_acceptance',
                 submittedAt: now.toISOString(),
                 acceptanceDeadline: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
-                assignedSupervisor: 'SUP-' + blockNum,
+                assignedSupervisor: assignedSupervisor,
                 supervisorPhoto: null,
                 studentApproved: false,
                 escalated: false,
                 timeline: [{ event: 'Complaint Registered - Awaiting Supervisor Acceptance', time: now.toISOString(), by: 'student' }],
             };
             await addComplaint(complaint);
+            console.log('[DEBUG] Complaint added successfully. Triggering push for supervisor:', complaint.assignedSupervisor);
+
+            // Trigger server-side push notification to supervisor (works even when app is closed)
+            sendPushToSupervisor(complaint.assignedSupervisor, {
+                ticketId: complaint.ticketId,
+                issueType: complaint.issueType,
+                block: complaint.block,
+                studentName: complaint.studentName,
+                description: complaint.description,
+            })
+                .then(res => console.log('[DEBUG] Push service result:', res))
+                .catch(err => console.error('[DEBUG] Push service crash:', err));
+
             setSubmitSuccess({ ticketId });
             await loadData();
         } catch (err) {
@@ -134,6 +258,7 @@ export default function StudentDashboard() {
 
 
     const submitRating = async () => {
+        console.log('[DEBUG] submitRating started | Rating:', chosenRating, 'Ticket:', ratingModal.ticketId);
         if (!chosenRating || !ratingModal.ticketId) return;
         const c = mine.find((x: Complaint) => x.ticketId === ratingModal.ticketId);
         if (!c) return;
@@ -153,6 +278,13 @@ export default function StudentDashboard() {
                 timeline: [...(c.timeline || []), { event: `Resolution Approved by Student. Rated ${chosenRating}/5`, note: ratingComment, time: new Date().toISOString(), by: user.uid }],
             });
         }
+
+        // Cleanup: Delete both issue photo and resolution photo from storage when closed
+        import('../services/complaintService').then(({ deletePhotoFromSupabase }) => {
+            if (c.photo) deletePhotoFromSupabase(c.photo).catch(e => console.error('SD: Photo clear fail', e));
+            if (c.resolutionPhoto) deletePhotoFromSupabase(c.resolutionPhoto).catch(e => console.error('SD: ResPhoto clear fail', e));
+        });
+
         await addRatingToStats(c.assignedSupervisor, chosenRating, ratingModal.ticketId);
         setRatingModal({ show: false, ticketId: null });
         await loadData();
@@ -208,7 +340,7 @@ export default function StudentDashboard() {
                                 <p className="text-white/40 text-sm mt-1">Here's a summary of your hygiene complaints at LPU.</p>
                             </div>
                             <div className="flex gap-2">
-                                <button className="flex items-center gap-2 bg-white/5 hover:bg-white/10 border border-white/5 px-4 py-2.5 rounded-xl text-sm font-bold transition-all" onClick={() => { }}>
+                                <button className="flex items-center gap-2 bg-white/5 hover:bg-white/10 border border-white/5 px-4 py-2.5 rounded-xl text-sm font-bold transition-all" onClick={handleScanQrClick}>
                                     <QrCode size={16} /> Scan QR
                                 </button>
                                 <button className="flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 px-4 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg shadow-indigo-500/20" onClick={openForm}>
@@ -394,6 +526,10 @@ export default function StudentDashboard() {
 
                             {/* Submit */}
                             <button type="submit" disabled={submitting}
+                                onClick={() => {
+                                    console.log('[DEBUG] Button clicked!');
+                                    if (submitting) console.warn('[DEBUG] Button is DISABLED (currently submitting)');
+                                }}
                                 className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 py-4 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all disabled:opacity-50 shadow-lg shadow-indigo-500/20">
                                 {submitting ? (
                                     <><div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Uploading…</>

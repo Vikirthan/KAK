@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { LogOut, Volume2, VolumeX, X, ZoomIn, MapPin, User, Phone, Clock, Camera, CheckCircle, AlertTriangle, CircleAlert, Star, Ban, ChevronRight, Zap, Bell, ShieldAlert, Download, MessageSquare } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { getComplaintsForSupervisor, updateComplaint, uploadPhotoToSupabase, getComplaints } from '../services/complaintService';
 import { getSupStat, recordResolutionStats } from '../services/statService';
-import { formatTime, formatDateTime, msUntil, formatCountdown, ISSUE_ICONS } from '../lib/types';
+import { formatTime, formatDateTime, msUntil, formatCountdown, ISSUE_ICONS, ISSUE_HINDI, FLOOR_HINDI } from '../lib/types';
 import type { Complaint } from '../lib/types';
+import { subscribeToPush } from '../services/pushService';
 
 // ─── Photo Lightbox with Download ────────────────────────────────
 function PhotoLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
@@ -141,6 +143,7 @@ function PremiumTimer({ ticketId, deadline, totalMs, timerRef, size = 'normal' }
 // ─── Main Dashboard ──────────────────────────────────────────────
 export default function SupervisorDashboard() {
     const { logout, getSession } = useAuth();
+    const navigate = useNavigate();
     const user = getSession();
     const [complaints, setComplaints] = useState<Complaint[]>([]);
     const [loading, setLoading] = useState(true);
@@ -152,32 +155,112 @@ export default function SupervisorDashboard() {
     const [resolving, setResolving] = useState(false);
     const [activeCall, setActiveCall] = useState<Complaint | null>(null);
     const [seenTickets, setSeenTickets] = useState<Set<string>>(new Set());
-    const [isSpeaking, setIsSpeaking] = useState(false);
     const sirenRef = useRef<HTMLAudioElement | null>(null);
     const timerRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
+    // Listen for Service Worker messages to navigate to incoming call screen
+    useEffect(() => {
+        const handler = (event: MessageEvent) => {
+            if (event.data?.type === 'INCOMING_COMPLAINT' || event.data?.type === 'NAVIGATE_TO_INCOMING') {
+                // SW detected a new complaint — navigate to full-screen incoming call page
+                const ticketId = event.data.ticketId;
+                navigate(ticketId ? `/incoming?ticket=${ticketId}` : '/incoming');
+            }
+        };
+        navigator.serviceWorker?.addEventListener('message', handler);
+        return () => navigator.serviceWorker?.removeEventListener('message', handler);
+    }, [navigate]);
+
     // Notification Permission
+    const [permissionStatus, setPermissionStatus] = useState<NotificationPermission>(
+        'Notification' in window ? Notification.permission : 'denied'
+    );
+
     const requestNotifications = async () => {
         if ('Notification' in window) {
             const permission = await Notification.requestPermission();
+            setPermissionStatus(permission);
             if (permission === 'granted') {
                 console.log('Notification permission granted.');
+            } else {
+                console.warn('Notification permission:', permission);
             }
         }
     };
 
     useEffect(() => {
         requestNotifications();
+        // Check occasionally if permission changed
+        const iv = setInterval(() => {
+            if ('Notification' in window) setPermissionStatus(Notification.permission);
+        }, 5000);
+        return () => clearInterval(iv);
+    }, []);
 
+    useEffect(() => {
         // Register UID with Service Worker for Background Monitoring
-        if (user?.uid && navigator.serviceWorker.controller) {
-            navigator.serviceWorker.controller.postMessage({
-                type: 'SET_SUPERVISOR_ID',
-                uid: user.uid
+        const initSWCommunication = async () => {
+            if ('serviceWorker' in navigator) {
+                const registration = await navigator.serviceWorker.ready;
+                if (user?.uid) {
+                    const sw = registration.active || navigator.serviceWorker.controller;
+                    if (sw) {
+                        sw.postMessage({
+                            type: 'SET_SUPERVISOR_ID',
+                            uid: user.uid
+                        });
+                        console.log('[DASHBOARD] Sent UID to SW:', user.uid);
+
+                        // Start with polling fallback ON until push registration is confirmed.
+                        sw.postMessage({
+                            type: 'SET_POLLING_FALLBACK',
+                            enabled: true,
+                            reason: 'bootstrap',
+                        });
+                    }
+                }
+            }
+        };
+
+        const subscribeWithRetry = async (uid: string, attempts = 3): Promise<boolean> => {
+            for (let i = 1; i <= attempts; i++) {
+                const ok = await subscribeToPush(uid);
+                if (ok) return true;
+                if (i < attempts) {
+                    const delayMs = i * 2000;
+                    console.warn(`[PUSH] Retry ${i}/${attempts - 1} in ${delayMs}ms`);
+                    await new Promise((resolve) => setTimeout(resolve, delayMs));
+                }
+            }
+            return false;
+        };
+
+        const setPollingFallback = async (enabled: boolean, reason: string) => {
+            if (!('serviceWorker' in navigator)) return;
+            const registration = await navigator.serviceWorker.ready;
+            const sw = registration.active || navigator.serviceWorker.controller;
+            if (!sw) return;
+            sw.postMessage({
+                type: 'SET_POLLING_FALLBACK',
+                enabled,
+                reason,
+            });
+        };
+
+        if (user?.uid) {
+            initSWCommunication();
+            subscribeWithRetry(user.uid).then(async (ok) => {
+                if (ok) {
+                    console.log('[PUSH] ✅ Web Push subscription active');
+                    await setPollingFallback(false, 'push-active');
+                } else {
+                    console.warn('[PUSH] ⚠️ Web Push subscription failed, fallback polling remains enabled');
+                    await setPollingFallback(true, 'push-unavailable');
+                }
             });
         }
 
-        // Wake Lock to keep screen ON
+        // Wake Lock
         let wakeLock: any = null;
         const requestWakeLock = async () => {
             try {
@@ -185,11 +268,10 @@ export default function SupervisorDashboard() {
                     wakeLock = await (navigator as any).wakeLock.request('screen');
                     console.log('Wake Lock active');
                 }
-            } catch (err) { console.warn('Wake Lock failed', err); }
+            } catch (err) { }
         };
         requestWakeLock();
 
-        // Re-request on visibility change
         const handleVisibilityChange = () => {
             if (wakeLock !== null && document.visibilityState === 'visible') requestWakeLock();
         };
@@ -199,7 +281,7 @@ export default function SupervisorDashboard() {
             document.removeEventListener('visibilitychange', handleVisibilityChange);
             wakeLock?.release();
         };
-    }, []);
+    }, [user?.uid]);
 
     const sendBrowserNotification = (c: Complaint) => {
         if ('Notification' in window && Notification.permission === 'granted') {
@@ -212,22 +294,26 @@ export default function SupervisorDashboard() {
         }
     };
 
-    // Initialize siren audio
+    // Initialize siren audio + preload Hindi voice
     useEffect(() => {
-        sirenRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/951/951-preview.mp3'); // A loud alert sound
+        sirenRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/951/951-preview.mp3');
         sirenRef.current.loop = true;
+        sirenRef.current.volume = 1.0;
+
+        // Preload voices (Android needs this event to load Hindi voice)
+        if (window.speechSynthesis) {
+            window.speechSynthesis.getVoices();
+            window.speechSynthesis.addEventListener?.('voiceschanged', () => {
+                window.speechSynthesis.getVoices();
+            });
+        }
+
         return () => {
             sirenRef.current?.pause();
-            window.speechSynthesis.cancel();
+            window.speechSynthesis?.cancel();
         };
     }, []);
 
-    const playSiren = () => {
-        if (sirenOn && sirenRef.current) {
-            sirenRef.current.currentTime = 0;
-            sirenRef.current.play().catch(e => console.log('Siren play blocked:', e));
-        }
-    };
 
     const stopSiren = () => {
         if (sirenRef.current) {
@@ -236,21 +322,42 @@ export default function SupervisorDashboard() {
         }
     };
 
-    const speakIssue = (c: Complaint) => {
-        if (!window.speechSynthesis || isSpeaking) return;
+    // Hindi voice briefing — called AFTER acceptance
+    const speakHindiBriefing = (c: Complaint) => {
+        if (!window.speechSynthesis) return;
         window.speechSynthesis.cancel();
-        const text = `Incoming complaint: ${c.issueType}. Location: Block ${c.block}. Reported by ${c.studentName}. Issue details: ${c.description || 'No description provided'}.`;
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 0.9;
-        utterance.onstart = () => setIsSpeaking(true);
-        utterance.onend = () => setIsSpeaking(false);
+
+        // Build Hindi message
+        const issueHindi = ISSUE_HINDI[c.issueType] || c.issueType;
+        const blockParts = c.block ? c.block.split('-') : [];
+        const blockNum = blockParts[0] || c.block;
+        const floorHindi = blockParts[1] ? (FLOOR_HINDI[blockParts[1]] || blockParts[1]) : '';
+        const locationHindi = floorHindi 
+            ? `Block ${blockNum}, ${floorHindi}` 
+            : `Block ${blockNum}`;
+
+        const hindiText = `ध्यान दीजिए। नई शिकायत आई है। समस्या: ${issueHindi}। जगह: ${locationHindi}। कृपया तुरंत जाएं और 30 मिनट में ठीक करें।`;
+
+        const utterance = new SpeechSynthesisUtterance(hindiText);
+        utterance.lang = 'hi-IN';
+        utterance.rate = 0.85;
+        utterance.pitch = 1.0;
+        utterance.volume = 1.0;
+
+        // Try to find a Hindi voice
+        const voices = window.speechSynthesis.getVoices();
+        const hindiVoice = voices.find(v => v.lang === 'hi-IN') || voices.find(v => v.lang.startsWith('hi'));
+        if (hindiVoice) utterance.voice = hindiVoice;
+
         window.speechSynthesis.speak(utterance);
     };
 
     const loadData = useCallback(async () => {
         if (!user) return;
         try {
+            console.log(`[SupervisorDashboard] Polling for new complaints (seen: ${seenTickets.size})...`);
             const all = await getComplaintsForSupervisor(user.uid);
+            console.log(`[SupervisorDashboard] Found ${all.length} total for supervisor.`);
 
             // Detect NEW unaccepted complaints for the "Call" UI
             const newUnaccepted = all.filter(c =>
@@ -258,12 +365,9 @@ export default function SupervisorDashboard() {
                 !seenTickets.has(c.ticketId)
             );
 
-            if (newUnaccepted.length > 0 && !activeCall) {
+            if (newUnaccepted.length > 0) {
+                console.log(`[SupervisorDashboard] Detected ${newUnaccepted.length} NEW unaccepted complaints!`);
                 const latest = newUnaccepted[0];
-                setActiveCall(latest);
-                playSiren();
-                speakIssue(latest);
-                sendBrowserNotification(latest);
 
                 // Mark all current unaccepted as "seen" to prevent duplicate triggers
                 setSeenTickets(prev => {
@@ -271,6 +375,11 @@ export default function SupervisorDashboard() {
                     newUnaccepted.forEach(c => next.add(c.ticketId));
                     return next;
                 });
+
+                // Navigate to full-screen incoming call page (Swiggy-style)
+                console.log(`[SupervisorDashboard] Navigating to /incoming for ticket: ${latest.ticketId}`);
+                sendBrowserNotification(latest);
+                navigate(`/incoming?ticket=${latest.ticketId}`);
             }
 
             setComplaints(all);
@@ -282,13 +391,13 @@ export default function SupervisorDashboard() {
                 blackPoints: stat.blackPoints || 0,
                 avgRating: stat.avgRating || 0,
             });
-        } catch (err) { console.error('Sup load error', err); }
+        } catch (err) { console.error('[SupervisorDashboard] Data load error:', err); }
         finally { setLoading(false); }
-    }, [user?.uid, seenTickets, activeCall, sirenOn, isSpeaking]);
+    }, [user?.uid, seenTickets, navigate]);
 
     useEffect(() => {
         loadData();
-        const interval = setInterval(loadData, 5000);
+        const interval = setInterval(loadData, 8000);
         return () => { clearInterval(interval); Object.values(timerRef.current).forEach(clearInterval); };
     }, [loadData]);
 
@@ -354,10 +463,13 @@ export default function SupervisorDashboard() {
 
     const handleCallAccept = async () => {
         if (!activeCall) return;
+        const acceptedComplaint = activeCall; // Save reference before clearing
         stopSiren();
         window.speechSynthesis.cancel();
-        await acceptComplaint(activeCall);
+        await acceptComplaint(acceptedComplaint);
         setActiveCall(null);
+        // After acceptance, give a Hindi voice briefing about the complaint
+        setTimeout(() => speakHindiBriefing(acceptedComplaint), 500);
     };
 
     const handleCallSilence = () => {
@@ -448,30 +560,54 @@ export default function SupervisorDashboard() {
             )}
 
             {/* Navbar */}
-            <nav className="sticky top-0 z-50 bg-[#161625]/80 backdrop-blur-xl border-b border-white/5 py-3 px-4 md:px-6 flex items-center justify-between">
+            <nav className="sticky top-0 z-50 bg-[#161625]/80 backdrop-blur-xl border-b border-white/5 py-4 px-4 md:px-8 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                    <img src="icon-192.png" alt="KAK" className="w-9 h-9 rounded-lg" />
+                    <img src="icon-192.png" alt="KAK" className="w-10 h-10 rounded-xl" />
                     <div>
-                        <span className="text-lg font-bold tracking-tight">SUPERVISOR</span>
-                        <span className="hidden sm:block text-[10px] text-white/40 uppercase tracking-widest">Block {user.block || '–'} Dashboard</span>
+                        <span className="text-xl font-black tracking-tight block leading-none">KAK</span>
+                        <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-widest flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" /> Supervisor Portal
+                        </span>
                     </div>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-4">
+                    {permissionStatus !== 'granted' && (
+                        <button 
+                            onClick={requestNotifications}
+                            className="flex items-center gap-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 px-3 py-1.5 rounded-lg text-[10px] font-bold animate-pulse"
+                        >
+                            <AlertTriangle size={14} /> ENABLE ALERTS
+                        </button>
+                    )}
                     <button onClick={() => setSirenOn(!sirenOn)}
                         className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${sirenOn ? 'bg-cyan-500/10 border-cyan-500/20 text-cyan-400' : 'bg-white/5 border-white/5 text-white/40'
                             }`}>
                         {sirenOn ? <Volume2 size={14} /> : <VolumeX size={14} />}
                         {sirenOn ? 'Siren On' : 'Siren Off'}
                     </button>
-                    <div className="hidden sm:flex flex-col items-end">
-                        <span className="text-sm font-semibold">{user.name}</span>
-                        <span className="text-[10px] text-white/40">UID: {user.uid}</span>
+                    <div className="hidden md:flex flex-col items-end">
+                        <span className="text-sm font-black">{user.name}</span>
+                        <span className="text-[10px] text-white/40 font-mono italic">UID: {user.uid}</span>
                     </div>
-                    <button onClick={logout} className="p-2 rounded-xl hover:bg-white/5 text-white/60 hover:text-red-400 transition-colors">
-                        <LogOut size={18} />
+                    <button onClick={logout} className="p-2.5 rounded-xl hover:bg-white/5 text-white/40 hover:text-red-400 transition-colors">
+                        <LogOut size={20} />
                     </button>
                 </div>
             </nav>
+
+            {/* Permission Blocker Banner */}
+            {permissionStatus === 'denied' && (
+                <div className="bg-red-950/80 border-b border-red-500/30 p-4 flex items-center justify-between gap-4 animate-in slide-in-from-top duration-500">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 bg-red-500/20 rounded-lg"><AlertTriangle className="text-red-400" /></div>
+                        <div>
+                            <div className="text-sm font-black text-red-100">ALERTS ARE BLOCKED</div>
+                            <div className="text-xs text-red-200/60">The browser is stopping alarm sounds. Tap Lock icon 🔒 in the URL bar and Allow Notifications.</div>
+                        </div>
+                    </div>
+                    <button onClick={requestNotifications} className="bg-red-500 text-white px-4 py-2 rounded-lg text-xs font-black whitespace-nowrap">FIX NOW</button>
+                </div>
+            )}
 
             <main className="max-w-5xl mx-auto p-4 md:p-6">
                 {/* Flagged Alert */}
