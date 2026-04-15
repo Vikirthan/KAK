@@ -62,6 +62,14 @@ export const STUDENT_PROFILES: Record<string, { name: string; regNo: string; pho
     '789': { name: 'Priya Sharma', regNo: '78901234', phone: '9754321089' },
 };
 
+// Google login directory (email -> student UID).
+// Replace these placeholders with real institutional Gmail IDs.
+export const STUDENT_GOOGLE_EMAILS: Record<string, string> = {
+    'vikirthan.student@gmail.com': '123',
+    'arun.student@gmail.com': '456',
+    'priya.student@gmail.com': '789',
+};
+
 // Role label & icon map
 export const ROLE_META: Record<string, { label: string; icon: string; color: string }> = {
     student: { label: 'Student', icon: '🎓', color: '#6366f1' },
